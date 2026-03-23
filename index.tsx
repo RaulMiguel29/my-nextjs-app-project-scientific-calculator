@@ -1,45 +1,88 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Head from 'next/head'
 
 type ScientificFunction = 'sin' | 'cos' | 'tan' | 'asin' | 'acos' | 'atan' | 'sinh' | 'cosh' | 'tanh' | 'log' | 'ln' | 'sqrt' | 'square' | 'cube' | 'power' | 'exp' | 'fact' | 'pi' | 'e'
 
 export default function ScientificCalculator() {
-  const [display, setDisplay] = useState('0')
-  const [equation, setEquation] = useState('')
-  const [memory, setMemory] = useState(0)
+  const [display, setDisplay] = useState<string>('0')
+  const [equation, setEquation] = useState<string>('')
+  const [memory, setMemory] = useState<number>(0)
   const [angleMode, setAngleMode] = useState<'DEG' | 'RAD'>('DEG')
-  const [shift, setShift] = useState(false)
-  const [alpha, setAlpha] = useState(false)
   const [history, setHistory] = useState<string[]>([])
-  const [showHistory, setShowHistory] = useState(false)
-  const [lastAnswer, setLastAnswer] = useState(0)
+  const [showHistory, setShowHistory] = useState<boolean>(false)
+  const [lastAnswer, setLastAnswer] = useState<number>(0)
+  const [error, setError] = useState<string>('')
   const displayRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (displayRef.current) {
-      displayRef.current.scrollLeft = displayRef.current.scrollWidth
+  // Safe number parsing
+  const safeParseFloat = (value: string): number => {
+    const parsed = parseFloat(value)
+    return isNaN(parsed) ? 0 : parsed
+  }
+
+  // Format display to avoid scientific notation for most numbers
+  const formatDisplay = (value: number): string => {
+    if (isNaN(value) || !isFinite(value)) return '0'
+    if (Math.abs(value) > 1e12 || (Math.abs(value) < 1e-6 && value !== 0)) {
+      return value.toExponential(8)
     }
-  }, [display])
+    // Remove trailing zeros after decimal
+    const str = value.toString()
+    return str.includes('.') ? str.replace(/\.?0+$/, '') : str
+  }
 
-  const toRadians = (degrees: number) => degrees * (Math.PI / 180)
-  const toDegrees = (radians: number) => radians * (180 / Math.PI)
-
-  const evaluateExpression = (expr: string): number => {
+  // Safe evaluate expression
+  const evaluateExpression = useCallback((expr: string): number => {
+    if (!expr.trim()) return 0
+    
     try {
-      // Replace mathematical constants and functions
       let processed = expr
         .replace(/π/g, Math.PI.toString())
-        .replace(/e/g, Math.E.toString())
+        .replace(/e(?![a-z])/g, Math.E.toString())
         .replace(/ans/g, lastAnswer.toString())
+        .replace(/\s/g, '')
       
-      // Handle scientific functions
+      // Handle factorial
+      processed = processed.replace(/(\d+)!/g, (_, num) => {
+        const n = parseInt(num)
+        if (n < 0 || n > 170) return '0'
+        let fact = 1
+        for (let i = 2; i <= n; i++) fact *= i
+        return fact.toString()
+      })
+      
+      // Handle power
+      processed = processed.replace(/(\d+(?:\.\d+)?)\^(\d+(?:\.\d+)?)/g, (_, base, exp) => 
+        Math.pow(parseFloat(base), parseFloat(exp)).toString()
+      )
+      
+      // Handle square
+      processed = processed.replace(/(\d+(?:\.\d+)?)²/g, (_, num) => 
+        Math.pow(parseFloat(num), 2).toString()
+      )
+      
+      // Handle cube
+      processed = processed.replace(/(\d+(?:\.\d+)?)³/g, (_, num) => 
+        Math.pow(parseFloat(num), 3).toString()
+      )
+      
+      // Handle trigonometric and other functions
       const functions: { [key: string]: (x: number) => number } = {
-        sin: (x: number) => angleMode === 'DEG' ? Math.sin(toRadians(x)) : Math.sin(x),
-        cos: (x: number) => angleMode === 'DEG' ? Math.cos(toRadians(x)) : Math.cos(x),
-        tan: (x: number) => angleMode === 'DEG' ? Math.tan(toRadians(x)) : Math.tan(x),
-        asin: (x: number) => angleMode === 'DEG' ? toDegrees(Math.asin(x)) : Math.asin(x),
-        acos: (x: number) => angleMode === 'DEG' ? toDegrees(Math.acos(x)) : Math.acos(x),
-        atan: (x: number) => angleMode === 'DEG' ? toDegrees(Math.atan(x)) : Math.atan(x),
+        sin: (x: number) => angleMode === 'DEG' ? Math.sin(x * Math.PI / 180) : Math.sin(x),
+        cos: (x: number) => angleMode === 'DEG' ? Math.cos(x * Math.PI / 180) : Math.cos(x),
+        tan: (x: number) => angleMode === 'DEG' ? Math.tan(x * Math.PI / 180) : Math.tan(x),
+        asin: (x: number) => {
+          const val = Math.asin(x)
+          return angleMode === 'DEG' ? val * 180 / Math.PI : val
+        },
+        acos: (x: number) => {
+          const val = Math.acos(x)
+          return angleMode === 'DEG' ? val * 180 / Math.PI : val
+        },
+        atan: (x: number) => {
+          const val = Math.atan(x)
+          return angleMode === 'DEG' ? val * 180 / Math.PI : val
+        },
         sinh: (x: number) => Math.sinh(x),
         cosh: (x: number) => Math.cosh(x),
         tanh: (x: number) => Math.tanh(x),
@@ -52,201 +95,326 @@ export default function ScientificCalculator() {
       for (const [func, impl] of Object.entries(functions)) {
         const regex = new RegExp(`${func}\\(([^)]+)\\)`, 'g')
         processed = processed.replace(regex, (_, arg) => {
-          const val = evaluateExpression(arg)
-          return impl(val).toString()
+          try {
+            const val = evaluateExpression(arg)
+            const result = impl(val)
+            return isNaN(result) || !isFinite(result) ? '0' : result.toString()
+          } catch {
+            return '0'
+          }
         })
       }
-
-      // Handle power and square
-      processed = processed.replace(/(\d+)\^(\d+)/g, (_, base, exp) => Math.pow(parseFloat(base), parseFloat(exp)).toString())
-      processed = processed.replace(/(\d+)²/g, (_, num) => Math.pow(parseFloat(num), 2).toString())
-      processed = processed.replace(/(\d+)³/g, (_, num) => Math.pow(parseFloat(num), 3).toString())
       
-      // Evaluate the expression
+      // Final evaluation
+      // eslint-disable-next-line no-new-func
       const result = Function(`"use strict"; return (${processed})`)()
       return isNaN(result) || !isFinite(result) ? 0 : result
-    } catch {
+    } catch (err) {
+      console.error('Evaluation error:', err)
       return 0
     }
-  }
+  }, [angleMode, lastAnswer])
 
-  const handleNumber = (num: string) => {
+  // Add to history
+  const addToHistory = useCallback((entry: string) => {
+    setHistory(prev => {
+      const newHistory = [entry, ...prev]
+      return newHistory.slice(0, 20)
+    })
+  }, [])
+
+  // Handle number input
+  const handleNumber = useCallback((num: string) => {
+    setError('')
     if (display === '0' && !display.includes('.')) {
       setDisplay(num)
     } else {
-      setDisplay(display + num)
+      setDisplay(prev => prev + num)
     }
-  }
+  }, [display])
 
-  const handleOperator = (op: string) => {
-    setEquation(equation + display + op)
+  // Handle operator
+  const handleOperator = useCallback((op: string) => {
+    setError('')
+    setEquation(prev => prev + display + op)
     setDisplay('0')
-  }
+  }, [display])
 
-  const handleFunction = (func: ScientificFunction) => {
-    let value = parseFloat(display)
+  // Handle function
+  const handleFunction = useCallback((func: ScientificFunction) => {
+    setError('')
+    const value = safeParseFloat(display)
     let result = 0
 
-    switch (func) {
-      case 'sin':
-        result = angleMode === 'DEG' ? Math.sin(toRadians(value)) : Math.sin(value)
-        break
-      case 'cos':
-        result = angleMode === 'DEG' ? Math.cos(toRadians(value)) : Math.cos(value)
-        break
-      case 'tan':
-        result = angleMode === 'DEG' ? Math.tan(toRadians(value)) : Math.tan(value)
-        break
-      case 'asin':
-        result = angleMode === 'DEG' ? toDegrees(Math.asin(value)) : Math.asin(value)
-        break
-      case 'acos':
-        result = angleMode === 'DEG' ? toDegrees(Math.acos(value)) : Math.acos(value)
-        break
-      case 'atan':
-        result = angleMode === 'DEG' ? toDegrees(Math.atan(value)) : Math.atan(value)
-        break
-      case 'sinh':
-        result = Math.sinh(value)
-        break
-      case 'cosh':
-        result = Math.cosh(value)
-        break
-      case 'tanh':
-        result = Math.tanh(value)
-        break
-      case 'log':
-        result = Math.log10(value)
-        break
-      case 'ln':
-        result = Math.log(value)
-        break
-      case 'sqrt':
-        result = Math.sqrt(value)
-        break
-      case 'square':
-        result = Math.pow(value, 2)
-        break
-      case 'cube':
-        result = Math.pow(value, 3)
-        break
-      case 'exp':
-        result = Math.exp(value)
-        break
-      case 'fact':
-        result = factorial(value)
-        break
-      case 'pi':
-        setDisplay(display + Math.PI.toString())
-        return
-      case 'e':
-        setDisplay(display + Math.E.toString())
-        return
+    try {
+      switch (func) {
+        case 'sin':
+          result = angleMode === 'DEG' ? Math.sin(value * Math.PI / 180) : Math.sin(value)
+          break
+        case 'cos':
+          result = angleMode === 'DEG' ? Math.cos(value * Math.PI / 180) : Math.cos(value)
+          break
+        case 'tan':
+          result = angleMode === 'DEG' ? Math.tan(value * Math.PI / 180) : Math.tan(value)
+          break
+        case 'asin':
+          if (value < -1 || value > 1) {
+            setError('Input out of range (-1 to 1)')
+            return
+          }
+          result = angleMode === 'DEG' ? Math.asin(value) * 180 / Math.PI : Math.asin(value)
+          break
+        case 'acos':
+          if (value < -1 || value > 1) {
+            setError('Input out of range (-1 to 1)')
+            return
+          }
+          result = angleMode === 'DEG' ? Math.acos(value) * 180 / Math.PI : Math.acos(value)
+          break
+        case 'atan':
+          result = angleMode === 'DEG' ? Math.atan(value) * 180 / Math.PI : Math.atan(value)
+          break
+        case 'sinh':
+          result = Math.sinh(value)
+          break
+        case 'cosh':
+          result = Math.cosh(value)
+          break
+        case 'tanh':
+          result = Math.tanh(value)
+          break
+        case 'log':
+          if (value <= 0) {
+            setError('Logarithm undefined for non-positive numbers')
+            return
+          }
+          result = Math.log10(value)
+          break
+        case 'ln':
+          if (value <= 0) {
+            setError('Natural log undefined for non-positive numbers')
+            return
+          }
+          result = Math.log(value)
+          break
+        case 'sqrt':
+          if (value < 0) {
+            setError('Square root undefined for negative numbers')
+            return
+          }
+          result = Math.sqrt(value)
+          break
+        case 'square':
+          result = Math.pow(value, 2)
+          break
+        case 'cube':
+          result = Math.pow(value, 3)
+          break
+        case 'exp':
+          result = Math.exp(value)
+          break
+        case 'fact':
+          if (value < 0 || value > 170) {
+            setError('Factorial undefined for negative numbers or > 170')
+            return
+          }
+          let fact = 1
+          for (let i = 2; i <= Math.floor(value); i++) fact *= i
+          result = fact
+          break
+        case 'pi':
+          setDisplay(prev => prev + Math.PI.toString())
+          return
+        case 'e':
+          setDisplay(prev => prev + Math.E.toString())
+          return
+      }
+
+      const formattedResult = formatDisplay(result)
+      setDisplay(formattedResult)
+      setLastAnswer(result)
+      addToHistory(`${func}(${display}) = ${formattedResult}`)
+    } catch (err) {
+      setError('Calculation error')
+      console.error('Function error:', err)
     }
+  }, [display, angleMode, addToHistory])
 
-    setDisplay(result.toString())
-    setLastAnswer(result)
-    addToHistory(`${func}(${value}) = ${result}`)
-  }
-
-  const factorial = (n: number): number => {
-    if (n < 0) return 0
-    if (n === 0 || n === 1) return 1
-    let result = 1
-    for (let i = 2; i <= n; i++) result *= i
-    return result
-  }
-
-  const handleEqual = () => {
+  // Handle equals
+  const handleEqual = useCallback(() => {
+    setError('')
     const fullEquation = equation + display
+    if (!fullEquation.trim()) return
+    
     try {
       const result = evaluateExpression(fullEquation)
-      setDisplay(result.toString())
+      const formattedResult = formatDisplay(result)
+      setDisplay(formattedResult)
       setLastAnswer(result)
-      addToHistory(`${fullEquation} = ${result}`)
+      addToHistory(`${fullEquation} = ${formattedResult}`)
       setEquation('')
-    } catch {
-      setDisplay('Error')
-      setTimeout(() => setDisplay('0'), 1500)
+    } catch (err) {
+      setError('Invalid expression')
+      console.error('Equal error:', err)
+      setTimeout(() => setError(''), 2000)
     }
-  }
+  }, [equation, display, evaluateExpression, addToHistory])
 
-  const handleClear = () => {
+  // Handle clear
+  const handleClear = useCallback(() => {
+    setError('')
     setDisplay('0')
     setEquation('')
-  }
+  }, [])
 
-  const handleClearAll = () => {
+  // Handle clear all
+  const handleClearAll = useCallback(() => {
+    setError('')
     setDisplay('0')
     setEquation('')
     setMemory(0)
     setHistory([])
-  }
+  }, [])
 
-  const handleDelete = () => {
+  // Handle delete
+  const handleDelete = useCallback(() => {
+    setError('')
     if (display.length === 1) {
       setDisplay('0')
     } else {
-      setDisplay(display.slice(0, -1))
+      setDisplay(prev => prev.slice(0, -1))
     }
-  }
+  }, [display])
 
-  const handleDecimal = () => {
+  // Handle decimal
+  const handleDecimal = useCallback(() => {
+    setError('')
     if (!display.includes('.')) {
-      setDisplay(display + '.')
+      setDisplay(prev => prev + '.')
     }
-  }
+  }, [display])
 
-  const handleSignChange = () => {
-    setDisplay((parseFloat(display) * -1).toString())
-  }
+  // Handle sign change
+  const handleSignChange = useCallback(() => {
+    setError('')
+    const value = safeParseFloat(display)
+    setDisplay(formatDisplay(-value))
+  }, [display])
 
-  const handlePercentage = () => {
-    setDisplay((parseFloat(display) / 100).toString())
-  }
+  // Handle percentage
+  const handlePercentage = useCallback(() => {
+    setError('')
+    const value = safeParseFloat(display)
+    setDisplay(formatDisplay(value / 100))
+  }, [display])
 
-  const handlePower = () => {
-    setEquation(equation + display + '^')
+  // Handle power
+  const handlePower = useCallback(() => {
+    setError('')
+    setEquation(prev => prev + display + '^')
     setDisplay('0')
-  }
+  }, [display])
 
-  const handleMemoryStore = () => {
-    setMemory(parseFloat(display))
-  }
+  // Memory functions
+  const handleMemoryStore = useCallback(() => {
+    setMemory(safeParseFloat(display))
+    setError('')
+  }, [display])
 
-  const handleMemoryRecall = () => {
-    setDisplay(memory.toString())
-  }
+  const handleMemoryRecall = useCallback(() => {
+    setDisplay(formatDisplay(memory))
+    setError('')
+  }, [memory])
 
-  const handleMemoryAdd = () => {
-    setMemory(memory + parseFloat(display))
-  }
+  const handleMemoryAdd = useCallback(() => {
+    setMemory(prev => prev + safeParseFloat(display))
+    setError('')
+  }, [display])
 
-  const handleMemorySubtract = () => {
-    setMemory(memory - parseFloat(display))
-  }
+  const handleMemorySubtract = useCallback(() => {
+    setMemory(prev => prev - safeParseFloat(display))
+    setError('')
+  }, [display])
 
-  const handleMemoryClear = () => {
+  const handleMemoryClear = useCallback(() => {
     setMemory(0)
-  }
+    setError('')
+  }, [])
 
-  const addToHistory = (entry: string) => {
-    setHistory(prev => [entry, ...prev].slice(0, 20))
-  }
-
-  const clearHistory = () => {
+  const clearHistory = useCallback(() => {
     setHistory([])
-  }
+  }, [])
 
-  const handleCopy = () => {
+  const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(display)
-  }
+    setError('Copied!')
+    setTimeout(() => setError(''), 1500)
+  }, [display])
 
-  const Button = ({ onClick, children, className = "", disabled = false }: any) => (
+  // Keyboard support
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key
+      
+      if (/[0-9]/.test(key)) {
+        e.preventDefault()
+        handleNumber(key)
+      } else if (key === '+') {
+        e.preventDefault()
+        handleOperator('+')
+      } else if (key === '-') {
+        e.preventDefault()
+        handleOperator('-')
+      } else if (key === '*') {
+        e.preventDefault()
+        handleOperator('*')
+      } else if (key === '/') {
+        e.preventDefault()
+        handleOperator('/')
+      } else if (key === 'Enter' || key === '=') {
+        e.preventDefault()
+        handleEqual()
+      } else if (key === 'Escape') {
+        e.preventDefault()
+        handleClearAll()
+      } else if (key === 'Backspace') {
+        e.preventDefault()
+        handleDelete()
+      } else if (key === '.') {
+        e.preventDefault()
+        handleDecimal()
+      } else if (key === '%') {
+        e.preventDefault()
+        handlePercentage()
+      } else if (key === 's') {
+        e.preventDefault()
+        handleFunction('sin')
+      } else if (key === 'c') {
+        e.preventDefault()
+        handleFunction('cos')
+      } else if (key === 't') {
+        e.preventDefault()
+        handleFunction('tan')
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleNumber, handleOperator, handleEqual, handleClearAll, handleDelete, handleDecimal, handlePercentage, handleFunction])
+
+  // Scroll display
+  useEffect(() => {
+    if (displayRef.current) {
+      displayRef.current.scrollLeft = displayRef.current.scrollWidth
+    }
+  }, [display])
+
+  const Button = ({ onClick, children, className = "", disabled = false, title = "" }: any) => (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`relative overflow-hidden rounded-xl font-semibold transition-all duration-200 active:scale-95 hover:shadow-lg ${className}`}
+      title={title}
+      className={`relative overflow-hidden rounded-xl font-semibold transition-all duration-200 active:scale-95 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
     >
       {children}
     </button>
@@ -262,7 +430,6 @@ export default function ScientificCalculator() {
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
         <div className="w-full max-w-5xl">
-          {/* Calculator Card */}
           <div className="bg-gray-900/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-gray-700 overflow-hidden">
             {/* Header */}
             <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-4">
@@ -289,6 +456,13 @@ export default function ScientificCalculator() {
                   >
                     📜
                   </button>
+                  <button
+                    onClick={handleCopy}
+                    className="px-3 py-1 bg-white/20 rounded-lg text-white text-sm hover:bg-white/30 transition"
+                    title="Copy result"
+                  >
+                    📋
+                  </button>
                 </div>
               </div>
             </div>
@@ -296,15 +470,20 @@ export default function ScientificCalculator() {
             {/* Display */}
             <div className="p-6 bg-black/30 border-b border-gray-700">
               <div className="text-right">
-                <div className="text-gray-400 text-sm mb-2 font-mono min-h-[24px]">
-                  {equation || ' '}
+                <div className="text-gray-400 text-sm mb-2 font-mono min-h-[24px] break-all">
+                  {equation || '\u00A0'}
                 </div>
                 <div
                   ref={displayRef}
-                  className="text-5xl md:text-6xl font-bold text-white font-mono overflow-x-auto whitespace-nowrap scrollbar-hide"
+                  className="text-4xl md:text-5xl font-bold text-white font-mono overflow-x-auto whitespace-nowrap scrollbar-hide"
                 >
                   {display}
                 </div>
+                {error && (
+                  <div className="text-red-400 text-sm mt-2 animate-pulse">
+                    {error}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -357,19 +536,19 @@ export default function ScientificCalculator() {
                     <Button onClick={() => handleNumber('8')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">8</Button>
                     <Button onClick={() => handleNumber('9')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">9</Button>
                     <Button onClick={() => handleOperator('*')} className="bg-purple-600 hover:bg-purple-700 text-white text-2xl">×</Button>
-                    <Button onClick={handleFunction('sqrt')} className="bg-cyan-700 hover:bg-cyan-600 text-white">√</Button>
+                    <Button onClick={() => handleFunction('sqrt')} className="bg-cyan-700 hover:bg-cyan-600 text-white">√</Button>
                     
                     <Button onClick={() => handleNumber('4')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">4</Button>
                     <Button onClick={() => handleNumber('5')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">5</Button>
                     <Button onClick={() => handleNumber('6')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">6</Button>
                     <Button onClick={() => handleOperator('-')} className="bg-purple-600 hover:bg-purple-700 text-white text-2xl">-</Button>
-                    <Button onClick={handleFunction('square')} className="bg-cyan-700 hover:bg-cyan-600 text-white">x²</Button>
+                    <Button onClick={() => handleFunction('square')} className="bg-cyan-700 hover:bg-cyan-600 text-white">x²</Button>
                     
                     <Button onClick={() => handleNumber('1')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">1</Button>
                     <Button onClick={() => handleNumber('2')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">2</Button>
                     <Button onClick={() => handleNumber('3')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl">3</Button>
                     <Button onClick={() => handleOperator('+')} className="bg-purple-600 hover:bg-purple-700 text-white text-2xl">+</Button>
-                    <Button onClick={handleFunction('cube')} className="bg-cyan-700 hover:bg-cyan-600 text-white">x³</Button>
+                    <Button onClick={() => handleFunction('cube')} className="bg-cyan-700 hover:bg-cyan-600 text-white">x³</Button>
                     
                     <Button onClick={handleSignChange} className="bg-gray-700 hover:bg-gray-600 text-white">±</Button>
                     <Button onClick={() => handleNumber('0')} className="bg-gray-800 hover:bg-gray-700 text-white text-2xl col-span-2">0</Button>
@@ -379,12 +558,14 @@ export default function ScientificCalculator() {
 
                   {/* Additional Info */}
                   <div className="mt-4 text-center text-gray-500 text-xs">
-                    <span className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-2 flex-wrap justify-center">
                       <span>📐 {angleMode} Mode</span>
                       <span>•</span>
                       <span>💾 Memory: {memory}</span>
                       <span>•</span>
-                      <span>🔄 Last Answer: {lastAnswer}</span>
+                      <span>🔄 Last Answer: {formatDisplay(lastAnswer)}</span>
+                      <span>•</span>
+                      <span>⌨️ Keyboard enabled</span>
                     </span>
                   </div>
                 </>
@@ -410,14 +591,17 @@ export default function ScientificCalculator() {
                       history.map((entry, index) => (
                         <div
                           key={index}
-                          className="bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition cursor-pointer"
+                          className="bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition cursor-pointer group"
                           onClick={() => {
-                            const result = entry.split(' = ')[1]
-                            if (result) setDisplay(result)
-                            setShowHistory(false)
+                            const match = entry.match(/= (.+)$/)
+                            if (match && match[1]) {
+                              setDisplay(match[1])
+                              setShowHistory(false)
+                              setError('')
+                            }
                           }}
                         >
-                          <div className="text-gray-400 text-sm font-mono">{entry}</div>
+                          <div className="text-gray-400 text-sm font-mono break-all">{entry}</div>
                         </div>
                       ))
                     )}
@@ -430,11 +614,11 @@ export default function ScientificCalculator() {
           {/* Keyboard Shortcuts Hint */}
           <div className="mt-4 text-center text-gray-500 text-xs">
             <div className="inline-flex flex-wrap justify-center gap-3 bg-gray-800/50 backdrop-blur-lg rounded-lg px-4 py-2">
-              <span>⌨️ Keyboard Support:</span>
+              <span>⌨️ Keyboard:</span>
               <span>0-9</span>
               <span>+ - * /</span>
               <span>Enter =</span>
-              <span>Escape (AC)</span>
+              <span>Esc (AC)</span>
               <span>Backspace (⌫)</span>
               <span>s (sin)</span>
               <span>c (cos)</span>
@@ -456,10 +640,6 @@ export default function ScientificCalculator() {
           }
         }
         
-        .animate-fade-in {
-          animation: fadeIn 0.5s ease-out;
-        }
-        
         .scrollbar-hide::-webkit-scrollbar {
           display: none;
         }
@@ -467,15 +647,6 @@ export default function ScientificCalculator() {
         .scrollbar-hide {
           -ms-overflow-style: none;
           scrollbar-width: none;
-        }
-        
-        @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-          }
-          50% {
-            opacity: 0.5;
-          }
         }
         
         button {
@@ -500,6 +671,19 @@ export default function ScientificCalculator() {
           width: 100%;
           height: 100%;
           transition: 0s;
+        }
+        
+        @keyframes pulse {
+          0%, 100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.5;
+          }
+        }
+        
+        .animate-pulse {
+          animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
         }
       `}</style>
     </>
